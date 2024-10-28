@@ -23,7 +23,6 @@ func initDB(path string) *sql.DB {
 			description text,
 			dir_name text NOT NULL,
 			keep_inventory boolean NOT NULL,
-			save_interval int NOT NULL,
 			s3_bucket VARCHAR(255) NOT NULL,
 			prefix TEXT NOT NULL,
 			working_path TEXT NOT NULL,
@@ -165,42 +164,115 @@ func deleteFile(filePath string) error {
 	return nil
 }
 
-type Instance struct {
-	containerName string
-	description   string
-	dirName       string
-	keepInventory bool
-	saveInterval  int
-	prefix        string
-	s3Bucket      string
-	workingPath   string
-}
+func backupInstance(instance Instance) {
 
-func main() {
-
-	storageClass := "STANDARD" // Storage class used for the S3 storage
-	dbPath := "./db.sqlite"    // The path to the sqlite file
-
-	db := initDB(dbPath)
-
-	defer func(db *sql.DB) {
-		err := db.Close()
-		if err != nil {
-			log.Fatal(fmt.Sprintf("Could not close DB: %s", err))
-		}
-	}(db)
-
-	_, err := db.Exec("INSERT INTO instances (container_name,description,dir_name,s3_bucket,prefix,working_path,keep_inventory,save_interval) VALUES (?,?,?,?,?,?,?,?)",
-		"sammie_mc", "World with Sammie", "world", "ryans-backup-bucket", "minecraft/sammie", "/home/ryan/sammie_mc", true, 30)
+	err := os.Chdir(instance.workingPath)
 	if err != nil {
-		log.Fatalf("Could not insert into DB: %s", err)
+		log.Fatalf(err.Error())
 	}
 
-	var containerName, description, dirName, s3Bucket, prefix, workingPath string
-	var saveInterval int
-	var keepInventory bool
+	// Disable command output
+	// This is so there isn't a ton of output to the console all the time
+	output, err := runDockerCommand("gamerule sendCommandFeedback false", instance.containerName)
+	if err != nil {
+		log.Fatalf("Could not disable command feedback: %v, error: %v", output, err)
+	}
 
-	rows, err := db.Query("SELECT container_name,description,dir_name,s3_bucket,prefix,working_path,save_interval,keep_inventory FROM instances")
+	var currentTime string
+	var tarFileName string
+	var playerCount int32
+
+	currentTime = getTime()
+	tarFileName = fmt.Sprintf("world%v.tar.gz", currentTime)
+
+	// Check if there are players online
+	// We don't want to save if there aren't even any players playing
+	playerCount, err = getNumberOfPlayers(instance.containerName)
+	if err != nil {
+		log.Fatalf("Could not get playerCount of players: %v", err)
+	}
+
+	// If there are no players, wait the wait interval, else print the saving message
+	if playerCount == 0 {
+		fmt.Printf("%v: No players online, skipping...\n", instance.containerName)
+		return
+	} else if playerCount == 1 {
+		fmt.Printf("%v: There is %d player online, saving...\n", instance.containerName, playerCount)
+	} else {
+		fmt.Printf("%v: There are %d players online, saving...\n", instance.containerName, playerCount)
+	}
+
+	// Save the mc world
+	_ = say("Saving world...", instance.containerName) // Tell players that the world is saving
+	output, err = runDockerCommand("/save-all", instance.containerName)
+	if err != nil {
+		_ = say("Failed to save world", instance.containerName)
+		log.Fatalf("Could not save mc world: %v, error: %v", output, err)
+	}
+
+	// Buffer time to let things save
+	time.Sleep(10 * time.Second)
+
+	// Disable saving
+	// This ensures the save file doesn't change during the copy
+	output, err = runDockerCommand("/save-off", instance.containerName)
+	if err != nil {
+		log.Fatalf("Could not disable mc saving: %v, error: %v", output, err)
+	}
+
+	// Buffer to make sure the files aren't being accessed anymore
+	time.Sleep(5 * time.Second)
+
+	// Tar the world
+	// If it fails due to a changed during access, try again until it works
+	for {
+		output, err = runCommand(fmt.Sprintf("/bin/tar -czf ./%v ./%v", tarFileName, instance.dirName))
+		if err != nil {
+			log.Printf("Could not compress world: %v, error: %v\n", output, err)
+
+			err = deleteFile(tarFileName)
+			if err != nil {
+				log.Fatalf(err.Error())
+			}
+
+			time.Sleep(5 * time.Second) // Time buffer to hopefully allow whatever happened to clear up
+			continue
+		}
+		break
+	}
+
+	var storageClass = "STANDARD" // Storage class used for the S3 storage
+
+	// Upload the save to S3
+	err = backUpToS3(tarFileName, instance.s3Bucket, instance.prefix, storageClass)
+	if err != nil {
+		log.Fatalf(err.Error())
+	}
+
+	// Delete the tar file
+	err = deleteFile(tarFileName)
+	if err != nil {
+		log.Fatalf(err.Error())
+	}
+
+	// Re-enable saving
+	output, err = runDockerCommand("/save-on", instance.containerName)
+	if err != nil {
+		log.Fatalf("Could not re-enable mc saving: %v, error: %v", output, err)
+	}
+
+	_ = say("Save successful!", instance.containerName)
+	fmt.Printf("%v: Save success!\n", instance.containerName)
+
+}
+
+func getInstances(db *sql.DB) ([]Instance, error) {
+
+	var containerName, description, dirName, s3Bucket, prefix, workingPath string
+	var keepInventory bool
+	var instances []Instance
+
+	rows, err := db.Query("SELECT container_name,description,dir_name,s3_bucket,prefix,working_path,keep_inventory FROM instances")
 	if err != nil {
 		log.Fatalf("Could not query DB: %s", err)
 	}
@@ -213,134 +285,86 @@ func main() {
 	}(rows)
 
 	for rows.Next() {
-		err = rows.Scan(&containerName, &description, &dirName, &s3Bucket, &prefix, &workingPath, &saveInterval, &keepInventory)
+		err = rows.Scan(&containerName, &description, &dirName, &s3Bucket, &prefix, &workingPath, &keepInventory)
 		if err != nil {
-			log.Printf("Error scanning row: %s", err)
+			return nil, fmt.Errorf("Error scanning row: %s", err)
 		}
 
-		instance := Instance{
+		// Append the instance to the instances slice
+		instances = append(instances, Instance{
 			containerName: containerName,
 			description:   description,
 			dirName:       dirName,
 			s3Bucket:      s3Bucket,
 			prefix:        prefix,
 			workingPath:   workingPath,
-			saveInterval:  saveInterval,
 			keepInventory: keepInventory,
-		}
-		fmt.Println(instance)
+		})
 
 	}
+	return instances, nil
+}
 
+type Instance struct {
+	containerName string
+	description   string
+	dirName       string
+	keepInventory bool
+	prefix        string
+	s3Bucket      string
+	workingPath   string
+}
+
+func main() {
+
+	var saveInterval int32 = 30 // 30 minutes by default
 	waitDuration := time.Duration(saveInterval) * time.Minute
-
-	err = os.Chdir(workingPath)
-	if err != nil {
-		log.Fatalf(err.Error())
-	}
+	dbPath := "./db.sqlite" // The path to the sqlite file
 
 	// Make sure AWS CLI is installed and configured
-	err = checkAWSCLI()
+	err := checkAWSCLI()
 	if err != nil {
 		log.Fatalf(err.Error())
 	}
 
-	// Disable command output
-	// This is so there isn't a ton of output to the console all the time
-	output, err := runDockerCommand("gamerule sendCommandFeedback false", containerName)
-	if err != nil {
-		log.Fatalf("Could not disable command feedback: %v, error: %v", output, err)
-	}
+	db := initDB(dbPath)
 
-	var currentTime string
-	var tarFileName string
-	var playerCount int32
+	defer func(db *sql.DB) {
+		err := db.Close()
+		if err != nil {
+			log.Fatal(fmt.Sprintf("Could not close DB: %s", err))
+		}
+	}(db)
+
+	// An example of an insert for a new instance into the database
+	/*
+		_, err = db.Exec("INSERT INTO instances (container_name,description,dir_name,s3_bucket,prefix,working_path,keep_inventory) VALUES (?,?,?,?,?,?,?)",
+			"test-container", "Description of world", "world", "bucket-name", "prefix-to-upload-to", "/home/example/folder", true)
+		if err != nil {
+			log.Fatalf("Could not insert into DB: %s", err)
+		}
+	*/
 
 	for {
-
-		currentTime = getTime()
-		tarFileName = fmt.Sprintf("world%v.tar.gz", currentTime)
-
-		// Check if there are players online
-		// We don't want to save if there aren't even any players playing
-		playerCount, err = getNumberOfPlayers(containerName)
+		instances, err := getInstances(db)
 		if err != nil {
-			log.Fatalf("Could not get playerCount of players: %v", err)
+			log.Fatalf("Could not get instances: %s", err)
 		}
 
-		// If there are no players, wait the wait interval, else print the saving message
-		if playerCount == 0 {
-			fmt.Println("No players online, skipping...")
-			time.Sleep(waitDuration)
-			continue
-		} else if playerCount == 1 {
-			fmt.Printf("There is %d player online, saving...\n", playerCount)
-		} else {
-			fmt.Printf("There are %d players online, saving...\n", playerCount)
-		}
+		for _, instance := range instances {
 
-		// Save the mc world
-		_ = say("Saving world...", containerName) // Tell players that the world is saving
-		output, err := runDockerCommand("/save-all", containerName)
-		if err != nil {
-			_ = say("Failed to save world", containerName)
-			log.Fatalf("Could not save mc world: %v, error: %v", output, err)
-		}
-
-		// Buffer time to let things save
-		time.Sleep(10 * time.Second)
-
-		// Disable saving
-		// This ensures the save file doesn't change during the copy
-		output, err = runDockerCommand("/save-off", containerName)
-		if err != nil {
-			log.Fatalf("Could not disable mc saving: %v, error: %v", output, err)
-		}
-
-		// Buffer to make sure the files aren't being accessed anymore
-		time.Sleep(5 * time.Second)
-
-		// Tar the world
-		// If it fails due to a changed during access, try again until it works
-		for {
-			output, err = runCommand(fmt.Sprintf("/bin/tar -czf ./%v ./%v", tarFileName, dirName))
-			if err != nil {
-				log.Printf("Could not compress world: %v, error: %v\n", output, err)
-
-				err = deleteFile(tarFileName)
-				if err != nil {
-					log.Fatalf(err.Error())
-				}
-
-				time.Sleep(5 * time.Second) // Time buffer to hopefully allow whatever happened to clear up
-				continue
+			// Set the keepInventory setting based on the that field in the instance
+			if instance.keepInventory == true {
+				_, _ = runDockerCommand("/gamerule keepInventory true", instance.containerName)
+			} else {
+				_, _ = runDockerCommand("/gamerule keepInventory false", instance.containerName)
 			}
-			break
+
+			// Begin the actual backup of the instance
+			backupInstance(instance)
 		}
 
-		// Upload the save to S3
-		err = backUpToS3(tarFileName, s3Bucket, prefix, storageClass)
-		if err != nil {
-			log.Fatalf(err.Error())
-		}
-
-		// Delete the tar file
-		err = deleteFile(tarFileName)
-		if err != nil {
-			log.Fatalf(err.Error())
-		}
-
-		// Re-enable saving
-		output, err = runDockerCommand("/save-on", containerName)
-		if err != nil {
-			log.Fatalf("Could not re-enable mc saving: %v, error: %v", output, err)
-		}
-
-		_ = say("Save successful!", containerName)
-
-		// Sleep until the next save interval
 		time.Sleep(waitDuration)
-
 	}
 
 }
