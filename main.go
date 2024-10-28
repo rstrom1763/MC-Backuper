@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"fmt"
 	"log"
 	"os"
@@ -8,7 +9,51 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	_ "github.com/mattn/go-sqlite3"
 )
+
+func initDB(path string) *sql.DB {
+
+	createTablesQuery := `CREATE TABLE IF NOT EXISTS instances (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    container_name varchar(255) NOT NULL UNIQUE,
+    description text,
+    path text NOT NULL,
+    keep_inventory boolean NOT NULL,
+    save_interval int NOT NULL,
+    created_at BIGINT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS saves (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    filename VARCHAR(255) NOT NULL,
+    deleted BOOLEAN NOT NULL,
+    size BIGINT NOT NULL,
+    bucket VARCHAR(255) NOT NULL,
+    prefix TEXT NOT NULL,
+    created_at BIGINT DEFAULT CURRENT_TIMESTAMP,
+    instance_id INT NOT NULL,
+    FOREIGN KEY (instance_id) REFERENCES instances(id)
+);`
+
+	db, err := sql.Open("sqlite3", path)
+	if err != nil {
+		log.Fatal(fmt.Sprintf("Could not open DB: %s", err))
+	}
+	err = db.Ping()
+	if err != nil {
+		log.Fatal(fmt.Sprintf("Could not ping DB: %s", err))
+	}
+
+	_, err = db.Exec(createTablesQuery)
+	if err != nil {
+		log.Fatalf("Could not create tables: %s", err)
+	}
+
+	return db
+
+}
 
 func fileExists(filename string) bool {
 	_, err := os.Stat(filename)
@@ -115,28 +160,59 @@ func deleteFile(filePath string) error {
 	return nil
 }
 
-func main() {
-	containerName := "mc"
-	var saveInterval int32 = 30       // In minutes
-	s3Bucket := "ryans-backup-bucket" // S3 bucket to backup to
-	prefix := "minecraft/erik_new_world"
-	dirName := "world"
-	workingPath := "/home/ryan/erik_mc_world"
-	storageClass := "STANDARD"
+type Instance struct {
+	containerName string
+	saveInterval  int
+	s3Bucket      string
+	prefix        string
+	dirName       string
+	workingPath   string
+}
 
-	/*
-		containerName := "sammie_mc"
-		var saveInterval int32 = 30       // In minutes
-		s3Bucket := "ryans-backup-bucket" // S3 bucket to backup to
-		prefix := "minecraft/sammie"
-		dirName := "world"
-		workingPath := "/home/ryan/sammie_mc"
-		storageClass := "STANDARD"
-	*/
+func main() {
+
+	storageClass := "STANDARD"
+	dbPath := "./db.sqlite"
+	
+	db := initDB(dbPath)
+
+	defer func(db *sql.DB) {
+		err := db.Close()
+		if err != nil {
+			log.Fatal(fmt.Sprintf("Could not close DB: %s", err))
+		}
+	}(db)
+
+	_, err := db.Exec("INSERT INTO instances (container_name,description,path,keep_inventory,save_interval) VALUES (?,?,?,?,?)",
+		"test", "test instance", "test path", true, 15)
+	if err != nil {
+		log.Fatalf("Could not insert into DB: %s", err)
+	}
+
+	var container_name, description string
+	rows, err := db.Query("SELECT container_name,description FROM instances")
+	if err != nil {
+		log.Fatalf("Could not query DB: %s", err)
+	}
+
+	defer func(rows *sql.Rows) {
+		err := rows.Close()
+		if err != nil {
+			log.Printf("Error closing rows: %s", err)
+		}
+	}(rows)
+
+	for rows.Next() {
+		err = rows.Scan(&container_name, &description)
+		fmt.Println(container_name, description)
+		if err != nil {
+			log.Printf("Error scanning row: %s", err)
+		}
+	}
 
 	waitDuration := time.Duration(saveInterval) * time.Minute
 
-	err := os.Chdir(workingPath)
+	err = os.Chdir(workingPath)
 	if err != nil {
 		log.Fatalf(err.Error())
 	}
@@ -156,7 +232,7 @@ func main() {
 
 	var currentTime string
 	var tarFileName string
-	var number int32
+	var playerCount int32
 
 	for {
 
@@ -165,28 +241,32 @@ func main() {
 
 		// Check if there are players online
 		// We don't want to save if there aren't even any players playing
-		number, err = getNumberOfPlayers(containerName)
+		playerCount, err = getNumberOfPlayers(containerName)
 		if err != nil {
-			log.Fatalf("Could not get number of players: %v", err)
+			log.Fatalf("Could not get playerCount of players: %v", err)
 		}
 
-		if number == 0 {
+		// If there are no players, wait the wait interval, else print the saving message
+		if playerCount == 0 {
 			fmt.Println("No players online, skipping...")
 			time.Sleep(waitDuration)
 			continue
-		} else if number == 1 {
-			fmt.Printf("There is %d player online, saving...\n", number)
+		} else if playerCount == 1 {
+			fmt.Printf("There is %d player online, saving...\n", playerCount)
 		} else {
-			fmt.Printf("There are %d players online, saving...\n", number)
+			fmt.Printf("There are %d players online, saving...\n", playerCount)
 		}
 
 		// Save the mc world
-		_ = say("Saving world...", containerName)
+		_ = say("Saving world...", containerName) // Tell players that the world is saving
 		output, err := runDockerCommand("/save-all", containerName)
 		if err != nil {
 			_ = say("Failed to save world", containerName)
 			log.Fatalf("Could not save mc world: %v, error: %v", output, err)
 		}
+
+		// Buffer time to let things save
+		time.Sleep(10 * time.Second)
 
 		// Disable saving
 		// This ensures the save file doesn't change during the copy
