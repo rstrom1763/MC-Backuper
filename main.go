@@ -13,29 +13,32 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
+// Create the DB connection and create the tables if they don't already exist
 func initDB(path string) *sql.DB {
 
-	createTablesQuery := `CREATE TABLE IF NOT EXISTS instances (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    container_name varchar(255) NOT NULL UNIQUE,
-    description text,
-    path text NOT NULL,
-    keep_inventory boolean NOT NULL,
-    save_interval int NOT NULL,
-    created_at BIGINT DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS saves (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    filename VARCHAR(255) NOT NULL,
-    deleted BOOLEAN NOT NULL,
-    size BIGINT NOT NULL,
-    bucket VARCHAR(255) NOT NULL,
-    prefix TEXT NOT NULL,
-    created_at BIGINT DEFAULT CURRENT_TIMESTAMP,
-    instance_id INT NOT NULL,
-    FOREIGN KEY (instance_id) REFERENCES instances(id)
-);`
+	createTablesQuery := `
+		CREATE TABLE IF NOT EXISTS instances (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			container_name varchar(255) NOT NULL UNIQUE,
+			description text,
+			dir_name text NOT NULL,
+			keep_inventory boolean NOT NULL,
+			save_interval int NOT NULL,
+			s3_bucket VARCHAR(255) NOT NULL,
+			prefix TEXT NOT NULL,
+			working_path TEXT NOT NULL,
+			created_at BIGINT DEFAULT CURRENT_TIMESTAMP
+		);
+		
+		CREATE TABLE IF NOT EXISTS saves (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			filename VARCHAR(255) NOT NULL,
+			deleted BOOLEAN NOT NULL,
+			size BIGINT NOT NULL,
+			created_at BIGINT DEFAULT CURRENT_TIMESTAMP,
+			instance_id INT NOT NULL,
+			FOREIGN KEY (instance_id) REFERENCES instances(id)
+		);`
 
 	db, err := sql.Open("sqlite3", path)
 	if err != nil {
@@ -139,6 +142,8 @@ func getTime() string {
 // GLACIER
 // DEEP_ARCHIVE
 // REDUCED_REDUNDANCY
+
+// Backs up the file to the S3 bucket
 func backUpToS3(fileName string, bucket string, prefix string, storageClass string) error {
 
 	s3Path := fmt.Sprintf("s3://%v/%v", bucket, prefix)
@@ -162,18 +167,20 @@ func deleteFile(filePath string) error {
 
 type Instance struct {
 	containerName string
-	saveInterval  int
-	s3Bucket      string
-	prefix        string
+	description   string
 	dirName       string
+	keepInventory bool
+	saveInterval  int
+	prefix        string
+	s3Bucket      string
 	workingPath   string
 }
 
 func main() {
 
-	storageClass := "STANDARD"
-	dbPath := "./db.sqlite"
-	
+	storageClass := "STANDARD" // Storage class used for the S3 storage
+	dbPath := "./db.sqlite"    // The path to the sqlite file
+
 	db := initDB(dbPath)
 
 	defer func(db *sql.DB) {
@@ -183,14 +190,17 @@ func main() {
 		}
 	}(db)
 
-	_, err := db.Exec("INSERT INTO instances (container_name,description,path,keep_inventory,save_interval) VALUES (?,?,?,?,?)",
-		"test", "test instance", "test path", true, 15)
+	_, err := db.Exec("INSERT INTO instances (container_name,description,dir_name,s3_bucket,prefix,working_path,keep_inventory,save_interval) VALUES (?,?,?,?,?,?,?,?)",
+		"sammie_mc", "World with Sammie", "world", "ryans-backup-bucket", "minecraft/sammie", "/home/ryan/sammie_mc", true, 30)
 	if err != nil {
 		log.Fatalf("Could not insert into DB: %s", err)
 	}
 
-	var container_name, description string
-	rows, err := db.Query("SELECT container_name,description FROM instances")
+	var containerName, description, dirName, s3Bucket, prefix, workingPath string
+	var saveInterval int
+	var keepInventory bool
+
+	rows, err := db.Query("SELECT container_name,description,dir_name,s3_bucket,prefix,working_path,save_interval,keep_inventory FROM instances")
 	if err != nil {
 		log.Fatalf("Could not query DB: %s", err)
 	}
@@ -203,11 +213,23 @@ func main() {
 	}(rows)
 
 	for rows.Next() {
-		err = rows.Scan(&container_name, &description)
-		fmt.Println(container_name, description)
+		err = rows.Scan(&containerName, &description, &dirName, &s3Bucket, &prefix, &workingPath, &saveInterval, &keepInventory)
 		if err != nil {
 			log.Printf("Error scanning row: %s", err)
 		}
+
+		instance := Instance{
+			containerName: containerName,
+			description:   description,
+			dirName:       dirName,
+			s3Bucket:      s3Bucket,
+			prefix:        prefix,
+			workingPath:   workingPath,
+			saveInterval:  saveInterval,
+			keepInventory: keepInventory,
+		}
+		fmt.Println(instance)
+
 	}
 
 	waitDuration := time.Duration(saveInterval) * time.Minute
