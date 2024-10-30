@@ -25,6 +25,7 @@ func initDB(path string) *sql.DB {
 		s3_bucket VARCHAR(255) NOT NULL,
 		prefix TEXT NOT NULL,
 		working_path TEXT NOT NULL,
+    	active BOOLEAN DEFAULT TRUE NOT NULL,
 		created_at BIGINT DEFAULT CURRENT_TIMESTAMP
 	);
 	
@@ -295,11 +296,11 @@ func backupInstance(db *sql.DB, instance Instance) error {
 func getInstances(db *sql.DB) ([]Instance, error) {
 
 	var containerName, description, dirName, s3Bucket, prefix, workingPath string
-	var keepInventory bool
+	var keepInventory, active bool
 	var instances []Instance
 	var id int
 
-	rows, err := db.Query("SELECT id,container_name,description,dir_name,s3_bucket,prefix,working_path,keep_inventory FROM instances")
+	rows, err := db.Query("SELECT id,container_name,description,dir_name,s3_bucket,prefix,working_path,active,keep_inventory FROM instances")
 	if err != nil {
 		log.Fatalf("Could not query DB: %s", err)
 	}
@@ -312,7 +313,7 @@ func getInstances(db *sql.DB) ([]Instance, error) {
 	}(rows)
 
 	for rows.Next() {
-		err = rows.Scan(&id, &containerName, &description, &dirName, &s3Bucket, &prefix, &workingPath, &keepInventory)
+		err = rows.Scan(&id, &containerName, &description, &dirName, &s3Bucket, &prefix, &workingPath, &active, &keepInventory)
 		if err != nil {
 			return nil, fmt.Errorf("Error scanning row: %s", err)
 		}
@@ -326,6 +327,7 @@ func getInstances(db *sql.DB) ([]Instance, error) {
 			s3Bucket:      s3Bucket,
 			prefix:        prefix,
 			workingPath:   workingPath,
+			active:        active,
 			keepInventory: keepInventory,
 		})
 
@@ -341,6 +343,7 @@ type Instance struct {
 	keepInventory bool
 	prefix        string
 	s3Bucket      string
+	active        bool
 	workingPath   string
 }
 
@@ -381,6 +384,10 @@ func main() {
 		}
 
 		for _, instance := range instances {
+
+			if instance.active == false {
+				continue
+			}
 
 			// Set the keepInventory setting based on the that field in the instance
 			if instance.keepInventory == true {
