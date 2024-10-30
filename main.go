@@ -25,7 +25,7 @@ func initDB(path string) *sql.DB {
 		s3_bucket VARCHAR(255) NOT NULL,
 		prefix TEXT NOT NULL,
 		working_path TEXT NOT NULL,
-    	active BOOLEAN DEFAULT TRUE NOT NULL,
+		active BOOLEAN DEFAULT TRUE NOT NULL,
 		created_at BIGINT DEFAULT CURRENT_TIMESTAMP
 	);
 	
