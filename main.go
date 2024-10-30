@@ -16,28 +16,27 @@ import (
 // Create the DB connection and create the tables if they don't already exist
 func initDB(path string) *sql.DB {
 
-	createTablesQuery := `
-		CREATE TABLE IF NOT EXISTS instances (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			container_name varchar(255) NOT NULL UNIQUE,
-			description text,
-			dir_name text NOT NULL,
-			keep_inventory boolean NOT NULL,
-			s3_bucket VARCHAR(255) NOT NULL,
-			prefix TEXT NOT NULL,
-			working_path TEXT NOT NULL,
-			created_at BIGINT DEFAULT CURRENT_TIMESTAMP
-		);
-		
-		CREATE TABLE IF NOT EXISTS saves (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			filename VARCHAR(255) NOT NULL,
-			deleted BOOLEAN NOT NULL,
-			size BIGINT NOT NULL,
-			created_at BIGINT DEFAULT CURRENT_TIMESTAMP,
-			instance_id INT NOT NULL,
-			FOREIGN KEY (instance_id) REFERENCES instances(id)
-		);`
+	createTablesQuery := `CREATE TABLE IF NOT EXISTS instances (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		container_name varchar(255) NOT NULL UNIQUE,
+		description text,
+		dir_name text NOT NULL,
+		keep_inventory boolean NOT NULL,
+		s3_bucket VARCHAR(255) NOT NULL,
+		prefix TEXT NOT NULL,
+		working_path TEXT NOT NULL,
+		created_at BIGINT DEFAULT CURRENT_TIMESTAMP
+	);
+	
+	CREATE TABLE IF NOT EXISTS saves (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		filename VARCHAR(255) NOT NULL,
+		deleted BOOLEAN NOT NULL DEFAULT FALSE,
+		size BIGINT NOT NULL,
+		created_at BIGINT DEFAULT CURRENT_TIMESTAMP,
+		instance_id INT NOT NULL,
+		FOREIGN KEY (instance_id) REFERENCES instances(id)
+	);`
 
 	db, err := sql.Open("sqlite3", path)
 	if err != nil {
@@ -164,18 +163,29 @@ func deleteFile(filePath string) error {
 	return nil
 }
 
-func backupInstance(instance Instance) {
+func backupInstance(db *sql.DB, instance Instance) error {
 
-	err := os.Chdir(instance.workingPath)
+	transaction, err := db.Begin()
 	if err != nil {
-		log.Fatalf(err.Error())
+		return fmt.Errorf("Could not start transaction: %s", err)
+	}
+
+	// If the function errors out, call rollback.
+	// If everything is successful and tx is committed, rollback should have no effect
+	defer func(transaction *sql.Tx) {
+		_ = transaction.Rollback()
+	}(transaction)
+
+	err = os.Chdir(instance.workingPath)
+	if err != nil {
+		return fmt.Errorf("Could not change working directory: %s", err)
 	}
 
 	// Disable command output
 	// This is so there isn't a ton of output to the console all the time
-	output, err := runDockerCommand("gamerule sendCommandFeedback false", instance.containerName)
+	output, err := runDockerCommand("/gamerule sendCommandFeedback false", instance.containerName)
 	if err != nil {
-		log.Fatalf("Could not disable command feedback: %v, error: %v", output, err)
+		return fmt.Errorf("Could not disable command feedback: %v, error: %v", output, err)
 	}
 
 	var currentTime string
@@ -189,13 +199,13 @@ func backupInstance(instance Instance) {
 	// We don't want to save if there aren't even any players playing
 	playerCount, err = getNumberOfPlayers(instance.containerName)
 	if err != nil {
-		log.Fatalf("Could not get playerCount of players: %v", err)
+		return fmt.Errorf("Could not get playerCount of players: %v", err)
 	}
 
 	// If there are no players, wait the wait interval, else print the saving message
 	if playerCount == 0 {
 		fmt.Printf("%v: No players online, skipping...\n", instance.containerName)
-		return
+		return nil
 	} else if playerCount == 1 {
 		fmt.Printf("%v: There is %d player online, saving...\n", instance.containerName, playerCount)
 	} else {
@@ -207,7 +217,7 @@ func backupInstance(instance Instance) {
 	output, err = runDockerCommand("/save-all", instance.containerName)
 	if err != nil {
 		_ = say("Failed to save world", instance.containerName)
-		log.Fatalf("Could not save mc world: %v, error: %v", output, err)
+		return fmt.Errorf("Could not save world: %v", err)
 	}
 
 	// Buffer time to let things save
@@ -217,7 +227,7 @@ func backupInstance(instance Instance) {
 	// This ensures the save file doesn't change during the copy
 	output, err = runDockerCommand("/save-off", instance.containerName)
 	if err != nil {
-		log.Fatalf("Could not disable mc saving: %v, error: %v", output, err)
+		return fmt.Errorf("Could not save world: %v", err)
 	}
 
 	// Buffer to make sure the files aren't being accessed anymore
@@ -232,7 +242,7 @@ func backupInstance(instance Instance) {
 
 			err = deleteFile(tarFileName)
 			if err != nil {
-				log.Fatalf(err.Error())
+				return fmt.Errorf("Could not delete file: %v", err)
 			}
 
 			time.Sleep(5 * time.Second) // Time buffer to hopefully allow whatever happened to clear up
@@ -246,23 +256,39 @@ func backupInstance(instance Instance) {
 	// Upload the save to S3
 	err = backUpToS3(tarFileName, instance.s3Bucket, instance.prefix, storageClass)
 	if err != nil {
-		log.Fatalf(err.Error())
+		return fmt.Errorf("Could not backup to S3: %v", err)
+	}
+
+	tarFileStats, err := os.Stat(tarFileName)
+	if err != nil {
+		return fmt.Errorf("Could not stat tar file: %v", err)
+	}
+
+	_, err = transaction.Exec("INSERT INTO saves (filename,size,instance_id) VALUES (?,?,?)", tarFileName, tarFileStats.Size(), instance.id)
+	if err != nil {
+		return fmt.Errorf("Could not insert save record: %v", err)
 	}
 
 	// Delete the tar file
 	err = deleteFile(tarFileName)
 	if err != nil {
-		log.Fatalf(err.Error())
+		return fmt.Errorf("Could not delete tar file: %v", err)
 	}
 
 	// Re-enable saving
 	output, err = runDockerCommand("/save-on", instance.containerName)
 	if err != nil {
-		log.Fatalf("Could not re-enable mc saving: %v, error: %v", output, err)
+		return fmt.Errorf("Could not re-enable mc saving: %v, error: %v", output, err)
 	}
 
 	_ = say("Save successful!", instance.containerName)
 	fmt.Printf("%v: Save success!\n", instance.containerName)
+
+	err = transaction.Commit()
+	if err != nil {
+		return fmt.Errorf("Could not commit transaction: %v", err)
+	}
+	return nil
 
 }
 
@@ -271,8 +297,9 @@ func getInstances(db *sql.DB) ([]Instance, error) {
 	var containerName, description, dirName, s3Bucket, prefix, workingPath string
 	var keepInventory bool
 	var instances []Instance
+	var id int
 
-	rows, err := db.Query("SELECT container_name,description,dir_name,s3_bucket,prefix,working_path,keep_inventory FROM instances")
+	rows, err := db.Query("SELECT id,container_name,description,dir_name,s3_bucket,prefix,working_path,keep_inventory FROM instances")
 	if err != nil {
 		log.Fatalf("Could not query DB: %s", err)
 	}
@@ -285,13 +312,14 @@ func getInstances(db *sql.DB) ([]Instance, error) {
 	}(rows)
 
 	for rows.Next() {
-		err = rows.Scan(&containerName, &description, &dirName, &s3Bucket, &prefix, &workingPath, &keepInventory)
+		err = rows.Scan(&id, &containerName, &description, &dirName, &s3Bucket, &prefix, &workingPath, &keepInventory)
 		if err != nil {
 			return nil, fmt.Errorf("Error scanning row: %s", err)
 		}
 
 		// Append the instance to the instances slice
 		instances = append(instances, Instance{
+			id:            id,
 			containerName: containerName,
 			description:   description,
 			dirName:       dirName,
@@ -306,6 +334,7 @@ func getInstances(db *sql.DB) ([]Instance, error) {
 }
 
 type Instance struct {
+	id            int
 	containerName string
 	description   string
 	dirName       string
@@ -361,7 +390,11 @@ func main() {
 			}
 
 			// Begin the actual backup of the instance
-			backupInstance(instance)
+			err = backupInstance(db, instance)
+			if err != nil {
+				fmt.Printf("Could not backup the instance: %v", err)
+			}
+
 		}
 
 		time.Sleep(waitDuration)
