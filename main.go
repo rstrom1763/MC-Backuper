@@ -155,6 +155,18 @@ func backUpToS3(fileName string, bucket string, prefix string, storageClass stri
 
 }
 
+func deleteS3File(fileName string, bucket string, prefix string) error {
+
+	s3Path := fmt.Sprintf("s3://%v/%v/%v", bucket, prefix, fileName)
+
+	_, err := runCommand(fmt.Sprintf("aws s3 rm %v", s3Path))
+	if err != nil {
+		return fmt.Errorf("could not delete save file in S3: %v", err)
+	}
+
+	return nil
+}
+
 func deleteFile(filePath string) error {
 	// Attempt to remove the file
 	err := os.Remove(filePath)
@@ -335,6 +347,65 @@ func getInstances(db *sql.DB) ([]Instance, error) {
 	return instances, nil
 }
 
+func removeOldSaves(db *sql.DB, instance Instance, saveRetention int) error {
+
+	saveRecords, err := db.Query("SELECT id,filename FROM saves WHERE deleted = 0 AND instance_id = ? ORDER BY created_at DESC", instance.id)
+	if err != nil {
+		return fmt.Errorf("Could not query DB: %v", err)
+	}
+
+	defer func(saveRecords *sql.Rows) {
+		err := saveRecords.Close()
+		if err != nil {
+			log.Printf("Error closing saves: %s", err)
+		}
+	}(saveRecords)
+
+	var fileName string
+	var id int
+	i := 0
+
+	tx, _ := db.Begin()
+	// If the function errors out, call rollback.
+	// If everything is successful and tx is committed, rollback should have no effect
+	defer func(tx *sql.Tx) {
+		_ = tx.Rollback()
+	}(tx)
+
+	for saveRecords.Next() {
+
+		if i < saveRetention {
+			i = i + 1
+			continue
+		}
+
+		err = saveRecords.Scan(&id, &fileName)
+		if err != nil {
+			return fmt.Errorf("Error scanning row: %s", err)
+		}
+
+		err = deleteS3File(fileName, instance.s3Bucket, instance.prefix)
+		if err != nil {
+			return fmt.Errorf("Could not delete save file: %v", err)
+		}
+
+		_, err = tx.Exec("UPDATE saves SET deleted = 1 WHERE id = ?", id)
+		if err != nil {
+			return fmt.Errorf("Could not update save record: %v", err)
+		}
+
+	}
+
+	err = tx.Commit()
+	if err != nil {
+		return fmt.Errorf("Could not commit transaction: %v", err)
+	}
+
+	i = i + 1
+
+	return nil
+}
+
 type Instance struct {
 	id            int
 	containerName string
@@ -352,6 +423,7 @@ func main() {
 	var saveInterval int32 = 30 // 30 minutes by default
 	waitDuration := time.Duration(saveInterval) * time.Minute
 	dbPath := "./db.sqlite" // The path to the sqlite file
+	saveRetention := 5      // How many saves that should be held on to at any given point for each instance
 
 	// Make sure AWS CLI is installed and configured
 	err := checkAWSCLI()
@@ -387,6 +459,11 @@ func main() {
 
 			if instance.active == false {
 				continue
+			}
+
+			err = removeOldSaves(db, instance, saveRetention-1) // The minus one is to account for the save that is about to happen
+			if err != nil {
+				log.Printf("Could not remove old saves: %v", err)
 			}
 
 			// Set the keepInventory setting based on the that field in the instance
