@@ -180,7 +180,7 @@ func backupInstance(db *sql.DB, instance Instance) error {
 
 	transaction, err := db.Begin()
 	if err != nil {
-		return fmt.Errorf("Could not start transaction: %s", err)
+		return fmt.Errorf("could not start transaction: %s", err)
 	}
 
 	// If the function errors out, call rollback.
@@ -191,71 +191,58 @@ func backupInstance(db *sql.DB, instance Instance) error {
 
 	err = os.Chdir(instance.workingPath)
 	if err != nil {
-		return fmt.Errorf("Could not change working directory: %s", err)
+		return fmt.Errorf("could not change working directory: %s", err)
 	}
 
 	// Disable command output
 	// This is so there isn't a ton of output to the console all the time
 	output, err := runDockerCommand("/gamerule sendCommandFeedback false", instance.containerName)
 	if err != nil {
-		return fmt.Errorf("Could not disable command feedback: %v, error: %v", output, err)
+		return fmt.Errorf("could not disable command feedback: %v, error: %v", output, err)
 	}
 
 	var currentTime string
 	var tarFileName string
-	var playerCount int32
 
 	currentTime = getTime()
 	tarFileName = fmt.Sprintf("world%v.tar.gz", currentTime)
 
-	// Check if there are players online
-	// We don't want to save if there aren't even any players playing
-	playerCount, err = getNumberOfPlayers(instance.containerName)
-	if err != nil {
-		return fmt.Errorf("Could not get playerCount of players: %v", err)
-	}
-
-	// If there are no players, wait the wait interval, else print the saving message
-	if playerCount == 0 {
-		fmt.Printf("%v: No players online, skipping...\n", instance.containerName)
-		return nil
-	} else if playerCount == 1 {
-		fmt.Printf("%v: There is %d player online, saving...\n", instance.containerName, playerCount)
-	} else {
-		fmt.Printf("%v: There are %d players online, saving...\n", instance.containerName, playerCount)
-	}
-
 	// Save the mc world
 	_ = say("Saving world...", instance.containerName) // Tell players that the world is saving
-	output, err = runDockerCommand("/save-all", instance.containerName)
-	if err != nil {
-		_ = say("Failed to save world", instance.containerName)
-		return fmt.Errorf("Could not save world: %v", err)
-	}
-
-	// Buffer time to let things save
-	time.Sleep(10 * time.Second)
 
 	// Disable saving
 	// This ensures the save file doesn't change during the copy
 	output, err = runDockerCommand("/save-off", instance.containerName)
 	if err != nil {
-		return fmt.Errorf("Could not save world: %v", err)
+		return fmt.Errorf("could not save world: %v", err)
 	}
 
-	// Buffer to make sure the files aren't being accessed anymore
+	// Buffer time
 	time.Sleep(5 * time.Second)
 
+	output, err = runDockerCommand("/save-all", instance.containerName)
+	if err != nil {
+		_ = say("Failed to save world", instance.containerName)
+		return fmt.Errorf("could not save world: %v", err)
+	}
+
+	// Buffer time to let things save
+	time.Sleep(10 * time.Second)
+
 	// Tar the world
-	// If it fails due to a changed during access, try again until it works
+	// If it fails due to a change during access, try again until it works
 	for {
 		output, err = runCommand(fmt.Sprintf("/bin/tar -czf ./%v ./%v", tarFileName, instance.dirName))
 		if err != nil {
-			log.Printf("Could not compress world: %v, error: %v\n", output, err)
+
+			// Make sure the error doesn't have a newline character
+			err = fmt.Errorf(strings.Replace(err.Error(), "\n", "", -1))
+
+			log.Printf("%v: Could not compress world, error: %v\n", output, err)
 
 			err = deleteFile(tarFileName)
 			if err != nil {
-				return fmt.Errorf("Could not delete file: %v", err)
+				return fmt.Errorf("could not delete file: %v", err)
 			}
 
 			time.Sleep(5 * time.Second) // Time buffer to hopefully allow whatever happened to clear up
@@ -269,37 +256,39 @@ func backupInstance(db *sql.DB, instance Instance) error {
 	// Upload the save to S3
 	err = backUpToS3(tarFileName, instance.s3Bucket, instance.prefix, storageClass)
 	if err != nil {
-		return fmt.Errorf("Could not backup to S3: %v", err)
+		return fmt.Errorf("could not backup to S3: %v", err)
 	}
 
+	// Grabs info about the file. We are interested in the size of the file
 	tarFileStats, err := os.Stat(tarFileName)
 	if err != nil {
-		return fmt.Errorf("Could not stat tar file: %v", err)
+		return fmt.Errorf("could not stat tar file: %v", err)
 	}
 
+	// Add the save to the DB
 	_, err = transaction.Exec("INSERT INTO saves (filename,size,instance_id) VALUES (?,?,?)", tarFileName, tarFileStats.Size(), instance.id)
 	if err != nil {
-		return fmt.Errorf("Could not insert save record: %v", err)
+		return fmt.Errorf("could not insert save record: %v", err)
 	}
 
 	// Delete the tar file
 	err = deleteFile(tarFileName)
 	if err != nil {
-		return fmt.Errorf("Could not delete tar file: %v", err)
+		return fmt.Errorf("could not delete tar file: %v", err)
 	}
 
 	// Re-enable saving
 	output, err = runDockerCommand("/save-on", instance.containerName)
 	if err != nil {
-		return fmt.Errorf("Could not re-enable mc saving: %v, error: %v", output, err)
+		return fmt.Errorf("could not re-enable mc saving: %v, error: %v", output, err)
 	}
 
 	_ = say("Save successful!", instance.containerName)
-	fmt.Printf("%v: Save success!\n", instance.containerName)
+	log.Printf("%v: Save success!\n", instance.containerName)
 
 	err = transaction.Commit()
 	if err != nil {
-		return fmt.Errorf("Could not commit transaction: %v", err)
+		return fmt.Errorf("could not commit transaction: %v", err)
 	}
 	return nil
 
@@ -327,10 +316,10 @@ func getInstances(db *sql.DB) ([]Instance, error) {
 	for rows.Next() {
 		err = rows.Scan(&id, &containerName, &description, &dirName, &s3Bucket, &prefix, &workingPath, &active, &keepInventory)
 		if err != nil {
-			return nil, fmt.Errorf("Error scanning row: %s", err)
+			return nil, fmt.Errorf("error scanning row: %s", err)
 		}
 
-		// Append the instance to the instances slice
+		// Append the instance to the instance slice
 		instances = append(instances, Instance{
 			id:            id,
 			containerName: containerName,
@@ -347,11 +336,33 @@ func getInstances(db *sql.DB) ([]Instance, error) {
 	return instances, nil
 }
 
+func isContainerRunning(containerName string) (bool, error) {
+
+	command := fmt.Sprintf("docker ps --filter name=%v --filter status=running --format '{{.Names}}'", containerName)
+
+	output, err := runCommand(command)
+	if err != nil {
+		return false, fmt.Errorf("there was an error: %v", err)
+	}
+
+	//Remove the extra single quotes and newlines around the output
+	output = strings.Replace(output, "'", "", -1)
+	output = strings.Replace(output, "\n", "", -1)
+
+	if output == containerName {
+		return true, nil
+	} else if output == "" {
+		return false, nil
+	}
+
+	return false, fmt.Errorf("something went wrong")
+}
+
 func removeOldSaves(db *sql.DB, instance Instance, saveRetention int) error {
 
 	saveRecords, err := db.Query("SELECT id,filename FROM saves WHERE deleted = 0 AND instance_id = ? ORDER BY created_at DESC", instance.id)
 	if err != nil {
-		return fmt.Errorf("Could not query DB: %v", err)
+		return fmt.Errorf("could not query DB: %v", err)
 	}
 
 	defer func(saveRecords *sql.Rows) {
@@ -381,24 +392,24 @@ func removeOldSaves(db *sql.DB, instance Instance, saveRetention int) error {
 
 		err = saveRecords.Scan(&id, &fileName)
 		if err != nil {
-			return fmt.Errorf("Error scanning row: %s", err)
+			return fmt.Errorf("error scanning row: %s", err)
 		}
 
 		err = deleteS3File(fileName, instance.s3Bucket, instance.prefix)
 		if err != nil {
-			return fmt.Errorf("Could not delete save file: %v", err)
+			return fmt.Errorf("could not delete save file: %v", err)
 		}
 
 		_, err = tx.Exec("UPDATE saves SET deleted = 1 WHERE id = ?", id)
 		if err != nil {
-			return fmt.Errorf("Could not update save record: %v", err)
+			return fmt.Errorf("could not update save record: %v", err)
 		}
 
 	}
 
 	err = tx.Commit()
 	if err != nil {
-		return fmt.Errorf("Could not commit transaction: %v", err)
+		return fmt.Errorf("could not commit transaction: %v", err)
 	}
 
 	i = i + 1
@@ -457,8 +468,38 @@ func main() {
 
 		for _, instance := range instances {
 
+			// If the instance is set to inactive, skip it
 			if instance.active == false {
 				continue
+			}
+
+			// See if the container is even running
+			containerRunning, err := isContainerRunning(instance.containerName)
+			if err != nil {
+				log.Fatalf("There was an error seeing if container: %v : was running: %v", instance.containerName, err)
+			}
+			if containerRunning == false {
+				log.Printf("%v: Not running, skipping...\n", instance.containerName)
+				continue
+			}
+
+			var playerCount int32
+
+			// Check if there are players online
+			// We don't want to save if there aren't even any players playing
+			playerCount, err = getNumberOfPlayers(instance.containerName)
+			if err != nil {
+				log.Printf("Could not get playerCount of players: %v", err)
+			}
+
+			// If there are no players, wait the wait interval, else print the saving message
+			if playerCount == 0 {
+				log.Printf("%v: No players online, skipping...\n", instance.containerName)
+				continue
+			} else if playerCount == 1 {
+				log.Printf("%v: There is %d player online, saving...\n", instance.containerName, playerCount)
+			} else {
+				log.Printf("%v: There are %d players online, saving...\n", instance.containerName, playerCount)
 			}
 
 			err = removeOldSaves(db, instance, saveRetention-1) // The minus one is to account for the save that is about to happen
@@ -476,11 +517,12 @@ func main() {
 			// Begin the actual backup of the instance
 			err = backupInstance(db, instance)
 			if err != nil {
-				fmt.Printf("Could not backup the instance: %v", err)
+				log.Printf("Could not backup the instance: %v", err)
 			}
 
 		}
 
+		log.Printf("Waiting for %v minutes...\n", saveInterval)
 		time.Sleep(waitDuration)
 	}
 
