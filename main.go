@@ -522,6 +522,7 @@ func main() {
 
 		}
 
+		log.Printf("Waiting for %v minutes...\n", saveInterval)
 		time.Sleep(waitDuration)
 	}
 
