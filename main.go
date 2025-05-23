@@ -238,7 +238,7 @@ func backupInstance(db *sql.DB, instance Instance) error {
 
 			err = deleteFile(tarFileName)
 			if err != nil {
-				return fmt.Errorf("Could not delete file: %v", err)
+				return fmt.Errorf("could not delete file: %v", err)
 			}
 
 			time.Sleep(5 * time.Second) // Time buffer to hopefully allow whatever happened to clear up
@@ -252,29 +252,31 @@ func backupInstance(db *sql.DB, instance Instance) error {
 	// Upload the save to S3
 	err = backUpToS3(tarFileName, instance.s3Bucket, instance.prefix, storageClass)
 	if err != nil {
-		return fmt.Errorf("Could not backup to S3: %v", err)
+		return fmt.Errorf("could not backup to S3: %v", err)
 	}
 
+	// Grabs info about the file. We are interested in the size of the file
 	tarFileStats, err := os.Stat(tarFileName)
 	if err != nil {
-		return fmt.Errorf("Could not stat tar file: %v", err)
+		return fmt.Errorf("could not stat tar file: %v", err)
 	}
 
+	// Add the save to the DB
 	_, err = transaction.Exec("INSERT INTO saves (filename,size,instance_id) VALUES (?,?,?)", tarFileName, tarFileStats.Size(), instance.id)
 	if err != nil {
-		return fmt.Errorf("Could not insert save record: %v", err)
+		return fmt.Errorf("could not insert save record: %v", err)
 	}
 
 	// Delete the tar file
 	err = deleteFile(tarFileName)
 	if err != nil {
-		return fmt.Errorf("Could not delete tar file: %v", err)
+		return fmt.Errorf("could not delete tar file: %v", err)
 	}
 
 	// Re-enable saving
 	output, err = runDockerCommand("/save-on", instance.containerName)
 	if err != nil {
-		return fmt.Errorf("Could not re-enable mc saving: %v, error: %v", output, err)
+		return fmt.Errorf("could not re-enable mc saving: %v, error: %v", output, err)
 	}
 
 	_ = say("Save successful!", instance.containerName)
@@ -282,7 +284,7 @@ func backupInstance(db *sql.DB, instance Instance) error {
 
 	err = transaction.Commit()
 	if err != nil {
-		return fmt.Errorf("Could not commit transaction: %v", err)
+		return fmt.Errorf("could not commit transaction: %v", err)
 	}
 	return nil
 
@@ -470,7 +472,7 @@ func main() {
 			// See if the container is even running
 			containerRunning, err := isContainerRunning(instance.containerName)
 			if err != nil {
-				log.Fatalf("there was an error seeing if container: %v : was running: %v", instance.containerName, err)
+				log.Fatalf("There was an error seeing if container: %v : was running: %v", instance.containerName, err)
 			}
 			if containerRunning == false {
 				log.Printf("%v: Not running, skipping...\n", instance.containerName)
