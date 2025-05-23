@@ -203,27 +203,9 @@ func backupInstance(db *sql.DB, instance Instance) error {
 
 	var currentTime string
 	var tarFileName string
-	var playerCount int32
 
 	currentTime = getTime()
 	tarFileName = fmt.Sprintf("world%v.tar.gz", currentTime)
-
-	// Check if there are players online
-	// We don't want to save if there aren't even any players playing
-	playerCount, err = getNumberOfPlayers(instance.containerName)
-	if err != nil {
-		return fmt.Errorf("Could not get playerCount of players: %v", err)
-	}
-
-	// If there are no players, wait the wait interval, else print the saving message
-	if playerCount == 0 {
-		fmt.Printf("%v: No players online, skipping...\n", instance.containerName)
-		return nil
-	} else if playerCount == 1 {
-		fmt.Printf("%v: There is %d player online, saving...\n", instance.containerName, playerCount)
-	} else {
-		fmt.Printf("%v: There are %d players online, saving...\n", instance.containerName, playerCount)
-	}
 
 	// Save the mc world
 	_ = say("Saving world...", instance.containerName) // Tell players that the world is saving
@@ -296,7 +278,7 @@ func backupInstance(db *sql.DB, instance Instance) error {
 	}
 
 	_ = say("Save successful!", instance.containerName)
-	fmt.Printf("%v: Save success!\n", instance.containerName)
+	log.Printf("%v: Save success!\n", instance.containerName)
 
 	err = transaction.Commit()
 	if err != nil {
@@ -346,6 +328,28 @@ func getInstances(db *sql.DB) ([]Instance, error) {
 
 	}
 	return instances, nil
+}
+
+func isContainerRunning(containerName string) (bool, error) {
+
+	command := fmt.Sprintf("docker ps --filter name=%v --filter status=running --format '{{.Names}}'", containerName)
+
+	output, err := runCommand(command)
+	if err != nil {
+		return false, fmt.Errorf("there was an error: %v", err)
+	}
+
+	//Remove the extra single quotes and newlines around the output
+	output = strings.Replace(output, "'", "", -1)
+	output = strings.Replace(output, "\n", "", -1)
+
+	if output == containerName {
+		return true, nil
+	} else if output == "" {
+		return false, nil
+	}
+
+	return false, fmt.Errorf("something went wrong")
 }
 
 func removeOldSaves(db *sql.DB, instance Instance, saveRetention int) error {
@@ -458,8 +462,38 @@ func main() {
 
 		for _, instance := range instances {
 
+			// If the instance is set to inactive, skip it
 			if instance.active == false {
 				continue
+			}
+
+			// See if the container is even running
+			containerRunning, err := isContainerRunning(instance.containerName)
+			if err != nil {
+				log.Fatalf("there was an error seeing if container: %v : was running: %v", instance.containerName, err)
+			}
+			if containerRunning == false {
+				log.Printf("%v: Not running, skipping...\n", instance.containerName)
+				continue
+			}
+
+			var playerCount int32
+
+			// Check if there are players online
+			// We don't want to save if there aren't even any players playing
+			playerCount, err = getNumberOfPlayers(instance.containerName)
+			if err != nil {
+				log.Printf("Could not get playerCount of players: %v", err)
+			}
+
+			// If there are no players, wait the wait interval, else print the saving message
+			if playerCount == 0 {
+				log.Printf("%v: No players online, skipping...\n", instance.containerName)
+				continue
+			} else if playerCount == 1 {
+				log.Printf("%v: There is %d player online, saving...\n", instance.containerName, playerCount)
+			} else {
+				log.Printf("%v: There are %d players online, saving...\n", instance.containerName, playerCount)
 			}
 
 			err = removeOldSaves(db, instance, saveRetention-1) // The minus one is to account for the save that is about to happen
@@ -477,7 +511,7 @@ func main() {
 			// Begin the actual backup of the instance
 			err = backupInstance(db, instance)
 			if err != nil {
-				fmt.Printf("Could not backup the instance: %v", err)
+				log.Printf("Could not backup the instance: %v", err)
 			}
 
 		}
