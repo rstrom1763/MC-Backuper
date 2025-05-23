@@ -227,6 +227,17 @@ func backupInstance(db *sql.DB, instance Instance) error {
 
 	// Save the mc world
 	_ = say("Saving world...", instance.containerName) // Tell players that the world is saving
+
+	// Disable saving
+	// This ensures the save file doesn't change during the copy
+	output, err = runDockerCommand("/save-off", instance.containerName)
+	if err != nil {
+		return fmt.Errorf("Could not save world: %v", err)
+	}
+
+	// Buffer time
+	time.Sleep(5 * time.Second)
+
 	output, err = runDockerCommand("/save-all", instance.containerName)
 	if err != nil {
 		_ = say("Failed to save world", instance.containerName)
@@ -236,18 +247,8 @@ func backupInstance(db *sql.DB, instance Instance) error {
 	// Buffer time to let things save
 	time.Sleep(10 * time.Second)
 
-	// Disable saving
-	// This ensures the save file doesn't change during the copy
-	output, err = runDockerCommand("/save-off", instance.containerName)
-	if err != nil {
-		return fmt.Errorf("Could not save world: %v", err)
-	}
-
-	// Buffer to make sure the files aren't being accessed anymore
-	time.Sleep(5 * time.Second)
-
 	// Tar the world
-	// If it fails due to a changed during access, try again until it works
+	// If it fails due to a change during access, try again until it works
 	for {
 		output, err = runCommand(fmt.Sprintf("/bin/tar -czf ./%v ./%v", tarFileName, instance.dirName))
 		if err != nil {
