@@ -234,7 +234,11 @@ func backupInstance(db *sql.DB, instance Instance) error {
 	for {
 		output, err = runCommand(fmt.Sprintf("/bin/tar -czf ./%v ./%v", tarFileName, instance.dirName))
 		if err != nil {
-			log.Printf("Could not compress world: %v, error: %v\n", output, err)
+
+			// Make sure the error doesn't have a newline character
+			err = fmt.Errorf(strings.Replace(err.Error(), "\n", "", -1))
+
+			log.Printf("%v: Could not compress world, error: %v\n", output, err)
 
 			err = deleteFile(tarFileName)
 			if err != nil {
