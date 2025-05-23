@@ -180,7 +180,7 @@ func backupInstance(db *sql.DB, instance Instance) error {
 
 	transaction, err := db.Begin()
 	if err != nil {
-		return fmt.Errorf("Could not start transaction: %s", err)
+		return fmt.Errorf("could not start transaction: %s", err)
 	}
 
 	// If the function errors out, call rollback.
@@ -191,14 +191,14 @@ func backupInstance(db *sql.DB, instance Instance) error {
 
 	err = os.Chdir(instance.workingPath)
 	if err != nil {
-		return fmt.Errorf("Could not change working directory: %s", err)
+		return fmt.Errorf("could not change working directory: %s", err)
 	}
 
 	// Disable command output
 	// This is so there isn't a ton of output to the console all the time
 	output, err := runDockerCommand("/gamerule sendCommandFeedback false", instance.containerName)
 	if err != nil {
-		return fmt.Errorf("Could not disable command feedback: %v, error: %v", output, err)
+		return fmt.Errorf("could not disable command feedback: %v, error: %v", output, err)
 	}
 
 	var currentTime string
@@ -214,7 +214,7 @@ func backupInstance(db *sql.DB, instance Instance) error {
 	// This ensures the save file doesn't change during the copy
 	output, err = runDockerCommand("/save-off", instance.containerName)
 	if err != nil {
-		return fmt.Errorf("Could not save world: %v", err)
+		return fmt.Errorf("could not save world: %v", err)
 	}
 
 	// Buffer time
@@ -223,7 +223,7 @@ func backupInstance(db *sql.DB, instance Instance) error {
 	output, err = runDockerCommand("/save-all", instance.containerName)
 	if err != nil {
 		_ = say("Failed to save world", instance.containerName)
-		return fmt.Errorf("Could not save world: %v", err)
+		return fmt.Errorf("could not save world: %v", err)
 	}
 
 	// Buffer time to let things save
@@ -312,10 +312,10 @@ func getInstances(db *sql.DB) ([]Instance, error) {
 	for rows.Next() {
 		err = rows.Scan(&id, &containerName, &description, &dirName, &s3Bucket, &prefix, &workingPath, &active, &keepInventory)
 		if err != nil {
-			return nil, fmt.Errorf("Error scanning row: %s", err)
+			return nil, fmt.Errorf("error scanning row: %s", err)
 		}
 
-		// Append the instance to the instances slice
+		// Append the instance to the instance slice
 		instances = append(instances, Instance{
 			id:            id,
 			containerName: containerName,
@@ -358,7 +358,7 @@ func removeOldSaves(db *sql.DB, instance Instance, saveRetention int) error {
 
 	saveRecords, err := db.Query("SELECT id,filename FROM saves WHERE deleted = 0 AND instance_id = ? ORDER BY created_at DESC", instance.id)
 	if err != nil {
-		return fmt.Errorf("Could not query DB: %v", err)
+		return fmt.Errorf("could not query DB: %v", err)
 	}
 
 	defer func(saveRecords *sql.Rows) {
@@ -388,24 +388,24 @@ func removeOldSaves(db *sql.DB, instance Instance, saveRetention int) error {
 
 		err = saveRecords.Scan(&id, &fileName)
 		if err != nil {
-			return fmt.Errorf("Error scanning row: %s", err)
+			return fmt.Errorf("error scanning row: %s", err)
 		}
 
 		err = deleteS3File(fileName, instance.s3Bucket, instance.prefix)
 		if err != nil {
-			return fmt.Errorf("Could not delete save file: %v", err)
+			return fmt.Errorf("could not delete save file: %v", err)
 		}
 
 		_, err = tx.Exec("UPDATE saves SET deleted = 1 WHERE id = ?", id)
 		if err != nil {
-			return fmt.Errorf("Could not update save record: %v", err)
+			return fmt.Errorf("could not update save record: %v", err)
 		}
 
 	}
 
 	err = tx.Commit()
 	if err != nil {
-		return fmt.Errorf("Could not commit transaction: %v", err)
+		return fmt.Errorf("could not commit transaction: %v", err)
 	}
 
 	i = i + 1
