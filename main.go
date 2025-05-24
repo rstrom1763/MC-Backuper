@@ -283,6 +283,11 @@ func backupInstance(db *sql.DB, instance Instance) error {
 		return fmt.Errorf("could not re-enable mc saving: %v, error: %v", output, err)
 	}
 
+	output, err = runDockerCommand("/gamerule sendCommandFeedback true", instance.containerName)
+	if err != nil {
+		return fmt.Errorf("could not enable command feedback: %v, error: %v", output, err)
+	}
+
 	_ = say("Save successful!", instance.containerName)
 	log.Printf("%v: Save success!\n", instance.containerName)
 
