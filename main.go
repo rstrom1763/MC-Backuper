@@ -427,18 +427,6 @@ func removeOldSaves(db *sql.DB, instance Instance, saveRetention int) error {
 	return nil
 }
 
-type Instance struct {
-	id            int
-	containerName string
-	description   string
-	dirName       string
-	keepInventory bool
-	prefix        string
-	s3Bucket      string
-	active        bool
-	workingPath   string
-}
-
 func main() {
 
 	var saveInterval int32 = 30 // 30 minutes by default
