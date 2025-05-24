@@ -14,7 +14,7 @@ import (
 )
 
 // Create the DB connection and create the tables if they don't already exist
-func initDB(path string) *sql.DB {
+func initDB(path string) (*sql.DB, error) {
 
 	createTablesQuery := `CREATE TABLE IF NOT EXISTS instances (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -39,21 +39,25 @@ func initDB(path string) *sql.DB {
 		FOREIGN KEY (instance_id) REFERENCES instances(id)
 	);`
 
+	// Create the db connection
 	db, err := sql.Open("sqlite3", path)
 	if err != nil {
-		log.Fatal(fmt.Sprintf("Could not open DB: %s", err))
+		return nil, fmt.Errorf("could not open DB: %s", err)
 	}
+
+	// Test if we can access the db properly
 	err = db.Ping()
 	if err != nil {
-		log.Fatal(fmt.Sprintf("Could not ping DB: %s", err))
+		return nil, fmt.Errorf("could not ping DB: %s", err)
 	}
 
+	// Make sure that the tables exist
 	_, err = db.Exec(createTablesQuery)
 	if err != nil {
-		log.Fatalf("Could not create tables: %s", err)
+		return nil, fmt.Errorf("could not create tables: %s", err)
 	}
 
-	return db
+	return db, nil
 
 }
 
@@ -283,6 +287,7 @@ func backupInstance(db *sql.DB, instance Instance) error {
 		return fmt.Errorf("could not re-enable mc saving: %v, error: %v", output, err)
 	}
 
+	// Re-enable command feedback
 	output, err = runDockerCommand("/gamerule sendCommandFeedback true", instance.containerName)
 	if err != nil {
 		return fmt.Errorf("could not enable command feedback: %v, error: %v", output, err)
@@ -447,7 +452,10 @@ func main() {
 		log.Fatalf(err.Error())
 	}
 
-	db := initDB(dbPath)
+	db, err := initDB(dbPath)
+	if err != nil {
+		log.Fatalf("Could not open the database: %v", err)
+	}
 
 	defer func(db *sql.DB) {
 		err := db.Close()
