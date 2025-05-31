@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -190,6 +191,19 @@ func backupInstance(db *sql.DB, instance Instance) error {
 	// If the function errors out, call rollback.
 	// If everything is successful and tx is committed, rollback should have no effect
 	defer func(transaction *sql.Tx) {
+
+		// Re-enable saving
+		output, err := runDockerCommand("/save-on", instance.containerName)
+		if err != nil {
+			log.Printf("Error: %v: could not reenable mc saving: %v, error: %v", instance.containerName, output, err)
+		}
+
+		// Re-enable command feedback
+		output, err = runDockerCommand("/gamerule sendCommandFeedback true", instance.containerName)
+		if err != nil {
+			log.Printf("Error: %v: could not reenable command feedback: %v, error: %v", instance.containerName, output, err)
+		}
+
 		_ = transaction.Rollback()
 	}(transaction)
 
@@ -242,7 +256,7 @@ func backupInstance(db *sql.DB, instance Instance) error {
 			// Make sure the error doesn't have a newline character
 			err = fmt.Errorf(strings.Replace(err.Error(), "\n", "", -1))
 
-			log.Printf("%v: Could not compress world, error: %v\n", output, err)
+			log.Printf("Error: %v: Could not compress world, error: %v\n", output, err)
 
 			err = deleteFile(tarFileName)
 			if err != nil {
@@ -281,20 +295,8 @@ func backupInstance(db *sql.DB, instance Instance) error {
 		return fmt.Errorf("could not delete tar file: %v", err)
 	}
 
-	// Re-enable saving
-	output, err = runDockerCommand("/save-on", instance.containerName)
-	if err != nil {
-		return fmt.Errorf("could not re-enable mc saving: %v, error: %v", output, err)
-	}
-
-	// Re-enable command feedback
-	output, err = runDockerCommand("/gamerule sendCommandFeedback true", instance.containerName)
-	if err != nil {
-		return fmt.Errorf("could not enable command feedback: %v, error: %v", output, err)
-	}
-
 	_ = say("Save successful!", instance.containerName)
-	log.Printf("%v: Save success!\n", instance.containerName)
+	log.Printf("Info: %v: Save success!\n", instance.containerName)
 
 	err = transaction.Commit()
 	if err != nil {
@@ -319,7 +321,7 @@ func getInstances(db *sql.DB) ([]Instance, error) {
 	defer func(rows *sql.Rows) {
 		err := rows.Close()
 		if err != nil {
-			log.Printf("Error closing rows: %s", err)
+			log.Printf("Error: Error closing rows: %s", err)
 		}
 	}(rows)
 
@@ -378,7 +380,7 @@ func removeOldSaves(db *sql.DB, instance Instance, saveRetention int) error {
 	defer func(saveRecords *sql.Rows) {
 		err := saveRecords.Close()
 		if err != nil {
-			log.Printf("Error closing saves: %s", err)
+			log.Printf("Error: Error closing saves: %s", err)
 		}
 	}(saveRecords)
 
@@ -429,13 +431,26 @@ func removeOldSaves(db *sql.DB, instance Instance, saveRetention int) error {
 
 func main() {
 
+	// Open log file (create if not exists, append if exists)
+	logFile, err := os.OpenFile("./log.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	if err != nil {
+		log.Fatalf("Failed to open log file: %v", err)
+	}
+
+	// Create MultiWriter for stdout and file
+	multi := io.MultiWriter(os.Stdout, logFile)
+
+	// Set output for the default logger
+	log.SetOutput(multi)
+	log.Print("Info: Starting backup service\n")
+
 	var saveInterval int32 = 30 // 30 minutes by default
 	waitDuration := time.Duration(saveInterval) * time.Minute
 	dbPath := "./db.sqlite" // The path to the sqlite file
 	saveRetention := 5      // How many saves that should be held on to at any given point for each instance
 
 	// Make sure AWS CLI is installed and configured
-	err := checkAWSCLI()
+	err = checkAWSCLI()
 	if err != nil {
 		log.Fatalf(err.Error())
 	}
@@ -480,7 +495,7 @@ func main() {
 				log.Fatalf("There was an error seeing if container: %v : was running: %v", instance.containerName, err)
 			}
 			if containerRunning == false {
-				log.Printf("%v: Not running, skipping...\n", instance.containerName)
+				log.Printf("Info: %v: Not running, skipping\n", instance.containerName)
 				continue
 			}
 
@@ -490,22 +505,22 @@ func main() {
 			// We don't want to save if there aren't even any players playing
 			playerCount, err = getNumberOfPlayers(instance.containerName)
 			if err != nil {
-				log.Printf("Could not get playerCount of players: %v", err)
+				log.Printf("Error: %v: Could not get playerCount of players: %v", instance.containerName, err)
 			}
 
 			// If there are no players, wait the wait interval, else print the saving message
 			if playerCount == 0 {
-				log.Printf("%v: No players online, skipping...\n", instance.containerName)
+				log.Printf("Info: %v: No players online, skipping\n", instance.containerName)
 				continue
 			} else if playerCount == 1 {
-				log.Printf("%v: There is %d player online, saving...\n", instance.containerName, playerCount)
+				log.Printf("Info: %v: There is %d player online, saving\n", instance.containerName, playerCount)
 			} else {
-				log.Printf("%v: There are %d players online, saving...\n", instance.containerName, playerCount)
+				log.Printf("Info: %v: There are %d players online, saving\n", instance.containerName, playerCount)
 			}
 
 			err = removeOldSaves(db, instance, saveRetention-1) // The minus one is to account for the save that is about to happen
 			if err != nil {
-				log.Printf("Could not remove old saves: %v", err)
+				log.Printf("Error: %v: Could not remove old saves: %v", instance.containerName, err)
 			}
 
 			// Set the keepInventory setting based on the that field in the instance
@@ -518,12 +533,12 @@ func main() {
 			// Begin the actual backup of the instance
 			err = backupInstance(db, instance)
 			if err != nil {
-				log.Printf("Could not backup the instance: %v", err)
+				log.Printf("Error: %v: Could not backup the instance: %v", instance.containerName, err)
 			}
 
 		}
 
-		log.Printf("Waiting for %v minutes...\n", saveInterval)
+		log.Printf("Info: Waiting for %v minutes\n", saveInterval)
 		time.Sleep(waitDuration)
 	}
 
