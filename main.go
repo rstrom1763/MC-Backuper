@@ -190,6 +190,19 @@ func backupInstance(db *sql.DB, instance Instance) error {
 	// If the function errors out, call rollback.
 	// If everything is successful and tx is committed, rollback should have no effect
 	defer func(transaction *sql.Tx) {
+
+		// Re-enable saving
+		output, err := runDockerCommand("/save-on", instance.containerName)
+		if err != nil {
+			log.Printf("%v: could not reenable mc saving: %v, error: %v", instance.containerName, output, err)
+		}
+
+		// Re-enable command feedback
+		output, err = runDockerCommand("/gamerule sendCommandFeedback true", instance.containerName)
+		if err != nil {
+			log.Printf("%v: could not reenable command feedback: %v, error: %v", instance.containerName, output, err)
+		}
+
 		_ = transaction.Rollback()
 	}(transaction)
 
@@ -279,18 +292,6 @@ func backupInstance(db *sql.DB, instance Instance) error {
 	err = deleteFile(tarFileName)
 	if err != nil {
 		return fmt.Errorf("could not delete tar file: %v", err)
-	}
-
-	// Re-enable saving
-	output, err = runDockerCommand("/save-on", instance.containerName)
-	if err != nil {
-		return fmt.Errorf("could not re-enable mc saving: %v, error: %v", output, err)
-	}
-
-	// Re-enable command feedback
-	output, err = runDockerCommand("/gamerule sendCommandFeedback true", instance.containerName)
-	if err != nil {
-		return fmt.Errorf("could not enable command feedback: %v, error: %v", output, err)
 	}
 
 	_ = say("Save successful!", instance.containerName)
