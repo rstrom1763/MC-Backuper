@@ -495,7 +495,7 @@ func main() {
 				log.Fatalf("There was an error seeing if container: %v : was running: %v", instance.containerName, err)
 			}
 			if containerRunning == false {
-				log.Printf("Info: %v: Not running, skipping...\n", instance.containerName)
+				log.Printf("Info: %v: Not running, skipping\n", instance.containerName)
 				continue
 			}
 
@@ -510,12 +510,12 @@ func main() {
 
 			// If there are no players, wait the wait interval, else print the saving message
 			if playerCount == 0 {
-				log.Printf("Info: %v: No players online, skipping...\n", instance.containerName)
+				log.Printf("Info: %v: No players online, skipping\n", instance.containerName)
 				continue
 			} else if playerCount == 1 {
-				log.Printf("Info: %v: There is %d player online, saving...\n", instance.containerName, playerCount)
+				log.Printf("Info: %v: There is %d player online, saving\n", instance.containerName, playerCount)
 			} else {
-				log.Printf("Info: %v: There are %d players online, saving...\n", instance.containerName, playerCount)
+				log.Printf("Info: %v: There are %d players online, saving\n", instance.containerName, playerCount)
 			}
 
 			err = removeOldSaves(db, instance, saveRetention-1) // The minus one is to account for the save that is about to happen
@@ -538,7 +538,7 @@ func main() {
 
 		}
 
-		log.Printf("Info: Waiting for %v minutes...\n", saveInterval)
+		log.Printf("Info: Waiting for %v minutes\n", saveInterval)
 		time.Sleep(waitDuration)
 	}
 
