@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -430,13 +431,26 @@ func removeOldSaves(db *sql.DB, instance Instance, saveRetention int) error {
 
 func main() {
 
+	// Open log file (create if not exists, append if exists)
+	logFile, err := os.OpenFile("./log.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	if err != nil {
+		log.Fatalf("Failed to open log file: %v", err)
+	}
+
+	// Create MultiWriter for stdout and file
+	multi := io.MultiWriter(os.Stdout, logFile)
+
+	// Set output for the default logger
+	log.SetOutput(multi)
+	log.Print("Info: Starting backup service\n")
+
 	var saveInterval int32 = 30 // 30 minutes by default
 	waitDuration := time.Duration(saveInterval) * time.Minute
 	dbPath := "./db.sqlite" // The path to the sqlite file
 	saveRetention := 5      // How many saves that should be held on to at any given point for each instance
 
 	// Make sure AWS CLI is installed and configured
-	err := checkAWSCLI()
+	err = checkAWSCLI()
 	if err != nil {
 		log.Fatalf(err.Error())
 	}
