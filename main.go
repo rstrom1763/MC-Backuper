@@ -350,24 +350,24 @@ func getInstances(db *sql.DB) ([]Instance, error) {
 
 func isContainerRunning(containerName string) (bool, error) {
 
-	command := fmt.Sprintf("docker ps --filter name=%v --filter status=running --format '{{.Names}}'", containerName)
+	command := "docker ps --filter status=running --format '{{.Names}}'"
 
 	output, err := runCommand(command)
 	if err != nil {
-		return false, fmt.Errorf("there was an error: %v", err)
+		return false, fmt.Errorf("there was an error getting running docker containers: %v", err)
 	}
 
-	//Remove the extra single quotes and newlines around the output
-	output = strings.Replace(output, "'", "", -1)
-	output = strings.Replace(output, "\n", "", -1)
+	output = strings.Replace(output, "'", "", -1) //Remove the extra single quotes around the output
 
-	if output == containerName {
-		return true, nil
-	} else if output == "" {
-		return false, nil
+	runningContainers := strings.Split(output, "\n")
+
+	for _, container := range runningContainers {
+		if container == containerName {
+			return true, nil
+		}
 	}
 
-	return false, fmt.Errorf("something went wrong")
+	return false, nil
 }
 
 func removeOldSaves(db *sql.DB, instance Instance, saveRetention int) error {
@@ -463,7 +463,7 @@ func main() {
 	defer func(db *sql.DB) {
 		err := db.Close()
 		if err != nil {
-			log.Fatal(fmt.Sprintf("Could not close DB: %s", err))
+			log.Fatalf("Could not close DB: %s", err)
 		}
 	}(db)
 
@@ -485,16 +485,17 @@ func main() {
 		for _, instance := range instances {
 
 			// If the instance is set to inactive, skip it
-			if instance.active == false {
+			if !instance.active {
 				continue
 			}
 
-			// See if the container is even running
+			// See if the container is running
 			containerRunning, err := isContainerRunning(instance.containerName)
 			if err != nil {
-				log.Fatalf("There was an error seeing if container: %v : was running: %v", instance.containerName, err)
+				log.Fatalf("There was an error seeing if container: %v : was running, skipping: %v\n", instance.containerName, err)
+				continue
 			}
-			if containerRunning == false {
+			if !containerRunning {
 				log.Printf("Info: %v: Not running, skipping\n", instance.containerName)
 				continue
 			}
@@ -524,7 +525,7 @@ func main() {
 			}
 
 			// Set the keepInventory setting based on the that field in the instance
-			if instance.keepInventory == true {
+			if instance.keepInventory {
 				_, _ = runDockerCommand("/gamerule keepInventory true", instance.containerName)
 			} else {
 				_, _ = runDockerCommand("/gamerule keepInventory false", instance.containerName)
