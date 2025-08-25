@@ -17,28 +17,7 @@ import (
 // Create the DB connection and create the tables if they don't already exist
 func initDB(path string) (*sql.DB, error) {
 
-	createTablesQuery := `CREATE TABLE IF NOT EXISTS instances (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		container_name varchar(255) NOT NULL UNIQUE,
-		description text,
-		dir_name text NOT NULL,
-		keep_inventory boolean NOT NULL,
-		s3_bucket VARCHAR(255) NOT NULL,
-		prefix TEXT NOT NULL,
-		working_path TEXT NOT NULL,
-		active BOOLEAN DEFAULT TRUE NOT NULL,
-		created_at BIGINT DEFAULT CURRENT_TIMESTAMP
-	);
-	
-	CREATE TABLE IF NOT EXISTS saves (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		filename VARCHAR(255) NOT NULL,
-		deleted BOOLEAN NOT NULL DEFAULT FALSE,
-		size BIGINT NOT NULL,
-		created_at BIGINT DEFAULT CURRENT_TIMESTAMP,
-		instance_id INT NOT NULL,
-		FOREIGN KEY (instance_id) REFERENCES instances(id)
-	);`
+	createTablesQuery := INITDB_QUERY
 
 	// Create the db connection
 	db, err := sql.Open("sqlite3", path)
@@ -269,10 +248,8 @@ func backupInstance(db *sql.DB, instance Instance) error {
 		break
 	}
 
-	var storageClass = "STANDARD" // Storage class used for the S3 storage
-
 	// Upload the save to S3
-	err = backUpToS3(tarFileName, instance.s3Bucket, instance.prefix, storageClass)
+	err = backUpToS3(tarFileName, instance.s3Bucket, instance.prefix, S3_STORAGE_CLASS)
 	if err != nil {
 		return fmt.Errorf("could not backup to S3: %v", err)
 	}
@@ -389,6 +366,7 @@ func removeOldSaves(db *sql.DB, instance Instance, saveRetention int) error {
 	i := 0
 
 	tx, _ := db.Begin()
+
 	// If the function errors out, call rollback.
 	// If everything is successful and tx is committed, rollback should have no effect
 	defer func(tx *sql.Tx) {
@@ -414,7 +392,7 @@ func removeOldSaves(db *sql.DB, instance Instance, saveRetention int) error {
 
 		_, err = tx.Exec("UPDATE saves SET deleted = 1 WHERE id = ?", id)
 		if err != nil {
-			return fmt.Errorf("could not update save record: %v", err)
+			return fmt.Errorf("could not mark saves as deleted in DB: %v", err)
 		}
 
 	}
@@ -432,7 +410,7 @@ func removeOldSaves(db *sql.DB, instance Instance, saveRetention int) error {
 func main() {
 
 	// Open log file (create if not exists, append if exists)
-	logFile, err := os.OpenFile("./log.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	logFile, err := os.OpenFile(LOG_FILE_PATH, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 	if err != nil {
 		log.Fatalf("Failed to open log file: %v", err)
 	}
@@ -444,10 +422,7 @@ func main() {
 	log.SetOutput(multi)
 	log.Print("Info: Starting backup service\n")
 
-	var saveInterval int32 = 30 // 30 minutes by default
-	waitDuration := time.Duration(saveInterval) * time.Minute
-	dbPath := "./db.sqlite" // The path to the sqlite file
-	saveRetention := 5      // How many saves that should be held on to at any given point for each instance
+	waitDuration := time.Duration(SAVE_INTERVAL_MINUTES) * time.Minute
 
 	// Make sure AWS CLI is installed and configured
 	err = checkAWSCLI()
@@ -455,7 +430,7 @@ func main() {
 		log.Fatalf(err.Error())
 	}
 
-	db, err := initDB(dbPath)
+	db, err := initDB(DB_PATH)
 	if err != nil {
 		log.Fatalf("Could not open the database: %v", err)
 	}
@@ -519,7 +494,7 @@ func main() {
 				log.Printf("Info: %v: There are %d players online, saving\n", instance.containerName, playerCount)
 			}
 
-			err = removeOldSaves(db, instance, saveRetention-1) // The minus one is to account for the save that is about to happen
+			err = removeOldSaves(db, instance, SAVE_RETENTION_COUNT-1) // The minus one is to account for the save that is about to happen
 			if err != nil {
 				log.Printf("Error: %v: Could not remove old saves: %v", instance.containerName, err)
 			}
@@ -539,7 +514,7 @@ func main() {
 
 		}
 
-		log.Printf("Info: Waiting for %v minutes\n", saveInterval)
+		log.Printf("Info: Waiting for %v minutes\n", SAVE_INTERVAL_MINUTES)
 		time.Sleep(waitDuration)
 	}
 
