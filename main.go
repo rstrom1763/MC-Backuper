@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"main/daos"
 	"os"
 	"os/exec"
 	"strconv"
@@ -90,7 +91,7 @@ func runCommand(command string) (string, error) {
 	return string(output), nil
 }
 
-func runMinecraftCommand(dao DockerDAO, command string, containerName string) (string, error) {
+func runMinecraftCommand(dao daos.DockerDAO, command string, containerName string) (string, error) {
 
 	output, err := dao.RunCommand(context.Background(), containerName, command)
 	if err != nil {
@@ -100,7 +101,7 @@ func runMinecraftCommand(dao DockerDAO, command string, containerName string) (s
 	return output, nil
 }
 
-func getNumberOfPlayers(dao DockerDAO, container string) (int32, error) {
+func getNumberOfPlayers(dao daos.DockerDAO, container string) (int32, error) {
 	output, err := runMinecraftCommand(dao, "list", container)
 	if err != nil {
 		return -1, err
@@ -114,7 +115,7 @@ func getNumberOfPlayers(dao DockerDAO, container string) (int32, error) {
 	return int32(number), nil
 }
 
-func say(dao DockerDAO, input string, container string) error {
+func say(dao daos.DockerDAO, input string, container string) error {
 	_, err := runMinecraftCommand(dao, fmt.Sprintf("say %v", input), container)
 	if err != nil {
 		return err
@@ -173,7 +174,7 @@ func deleteFile(filePath string) error {
 	return nil
 }
 
-func backupInstance(dao DockerDAO, db *sql.DB, instance Instance) error {
+func backupInstance(dao daos.DockerDAO, db *sql.DB, instance Instance) error {
 
 	transaction, err := db.Begin()
 	if err != nil {
@@ -437,7 +438,7 @@ func main() {
 		}
 	}(db)
 
-	dockerDao, err := NewDockerDAO()
+	dockerDao, err := daos.NewDockerDAO()
 	if err != nil {
 		log.Fatalf("Could not create Docker DAO: %v", err)
 	}
