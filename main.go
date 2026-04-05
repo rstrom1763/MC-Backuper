@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -13,8 +14,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/client"
+	"github.com/docker/docker/pkg/stdcopy"
 	_ "github.com/mattn/go-sqlite3"
-	"github.com/moby/moby/client"
 )
 
 // Create the DB connection and create the tables if they don't already exist
@@ -92,17 +95,67 @@ func runCommand(command string) (string, error) {
 	return string(output), nil
 }
 
-func runDockerCommand(command string, container string) (string, error) {
-	output, err := runCommand(fmt.Sprintf("/snap/bin/docker exec %s rcon-cli %s", container, command))
+func runDockerCommand(command string, containerName string) (string, error) {
+	ctx := context.Background()
+
+	// 1. Create the Docker client
+	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
-		return "", fmt.Errorf("failed to run docker command: %v, error: %v", command, err)
+		return "", fmt.Errorf("could not create Docker client: %w", err)
+	}
+	defer cli.Close()
+
+	finalCmd := strings.Split(command, " ")
+
+	execConfig := container.ExecOptions{
+		AttachStdout: true,
+		AttachStderr: true,
+		Cmd:          finalCmd,
+	}
+
+	execID, err := cli.ContainerExecCreate(ctx, containerName, execConfig)
+	if err != nil {
+		return "", fmt.Errorf("could not create exec instance: %w", err)
+	}
+
+	// 3. Attach to the exec instance to get the output stream
+	resp, err := cli.ContainerExecAttach(ctx, execID.ID, container.ExecStartOptions{})
+	if err != nil {
+		return "", fmt.Errorf("could not attach to exec instance: %w", err)
+	}
+	defer resp.Close()
+
+	// 4. Demultiplex the output (separate stdout and stderr)
+	var outBuf, errBuf strings.Builder
+	_, err = stdcopy.StdCopy(&outBuf, &errBuf, resp.Reader)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", fmt.Errorf("could not demultiplex output: %w", err)
+	}
+
+	stdout := outBuf.String()
+	stderr := errBuf.String()
+
+	if stderr != "" {
+		return stdout, fmt.Errorf("exec error: %s", stderr)
+	}
+
+	return stdout, nil
+}
+
+func runMinecraftCommand(command string, containerName string) (string, error) {
+
+	finalCmd := fmt.Sprintf("rcon-cli %s", command)
+
+	output, err := runDockerCommand(finalCmd, containerName)
+	if err != nil {
+		return "", fmt.Errorf("could not run Docker command: %s", err.Error())
 	}
 
 	return output, nil
 }
 
 func getNumberOfPlayers(container string) (int32, error) {
-	output, err := runDockerCommand("/list", container)
+	output, err := runMinecraftCommand("/list", container)
 	if err != nil {
 		return -1, err
 	}
@@ -116,7 +169,7 @@ func getNumberOfPlayers(container string) (int32, error) {
 }
 
 func say(input string, container string) error {
-	_, err := runDockerCommand(fmt.Sprintf("/say %v", input), container)
+	_, err := runMinecraftCommand(fmt.Sprintf("/say %v", input), container)
 	if err != nil {
 		return err
 	}
@@ -345,18 +398,21 @@ func isContainerRunning(containerName string) (bool, error) {
 
 	ctx := context.Background()
 
-	dockerClient, err := client.New(client.FromEnv, client.WithUserAgent("test"))
+	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
-		return false, fmt.Errorf("could not create docker client: %s", err.Error())
+		return false, fmt.Errorf("could not create docker client: %w", err)
 	}
-	defer dockerClient.Close()
+	defer cli.Close()
 
-	containerListResult, err := dockerClient.ContainerList(ctx, client.ContainerListOptions{
+	containers, err := cli.ContainerList(ctx, container.ListOptions{
 		All: true,
 	})
+	if err != nil {
+		return false, fmt.Errorf("could not list containers: %w", err)
+	}
 
-	for _, container := range containerListResult.Items {
-		if slices.Contains(container.Names, "/"+containerName) {
+	for _, c := range containers {
+		if slices.Contains(c.Names, "/"+containerName) {
 			return true, nil
 		}
 	}
@@ -498,11 +554,11 @@ func main() {
 			// We don't want to save if there aren't even any players playing
 			playerCount, err = getNumberOfPlayers(instance.containerName)
 			if err != nil {
-				log.Printf("Error: %v: Could not get playerCount of players: %v", instance.containerName, err)
+				log.Printf("Error: %v: Could not get player count: %v", instance.containerName, err)
 			}
 
 			// If there are no players, wait the wait interval, else print the saving message
-			if playerCount == 0 {
+			if playerCount < 1 {
 				log.Printf("Info: %v: No players online, skipping\n", instance.containerName)
 				continue
 			} else if playerCount == 1 {
@@ -518,9 +574,9 @@ func main() {
 
 			// Set the keepInventory setting based on the that field in the instance
 			if instance.keepInventory == true {
-				_, _ = runDockerCommand("/gamerule keepInventory true", instance.containerName)
+				_, _ = runMinecraftCommand("/gamerule keepInventory true", instance.containerName)
 			} else {
-				_, _ = runDockerCommand("/gamerule keepInventory false", instance.containerName)
+				_, _ = runMinecraftCommand("/gamerule keepInventory false", instance.containerName)
 			}
 
 			// Begin the actual backup of the instance
