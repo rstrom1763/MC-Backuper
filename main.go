@@ -1,17 +1,20 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/moby/moby/client"
 )
 
 // Create the DB connection and create the tables if they don't already exist
@@ -90,7 +93,7 @@ func runCommand(command string) (string, error) {
 }
 
 func runDockerCommand(command string, container string) (string, error) {
-	output, err := runCommand(fmt.Sprintf("/usr/bin/docker exec %s rcon-cli %s", container, command))
+	output, err := runCommand(fmt.Sprintf("/snap/bin/docker exec %s rcon-cli %s", container, command))
 	if err != nil {
 		return "", fmt.Errorf("failed to run docker command: %v, error: %v", command, err)
 	}
@@ -124,8 +127,8 @@ func say(input string, container string) error {
 func checkAWSCLI() error {
 
 	// Check if AWS CLI is installed
-	if !fileExists("/usr/bin/aws") {
-		return fmt.Errorf("AWS CLI is not installed or not found in /usr/bin")
+	if !fileExists("/usr/local/bin/aws") {
+		return fmt.Errorf("AWS CLI is not installed or not found in /usr/local/bin")
 	}
 	return nil
 }
@@ -138,15 +141,6 @@ func getTime() string {
 	return formattedTime
 }
 
-// Storage class options:
-// STANDARD
-// INTELLIGENT_TIERING
-// STANDARD_IA
-// ONEZONE_IA
-// GLACIER
-// DEEP_ARCHIVE
-// REDUCED_REDUNDANCY
-
 // Backs up the file to the S3 bucket
 func backUpToS3(fileName string, bucket string, prefix string, storageClass string) error {
 
@@ -157,7 +151,6 @@ func backUpToS3(fileName string, bucket string, prefix string, storageClass stri
 		return err
 	}
 	return nil
-
 }
 
 func deleteS3File(fileName string, bucket string, prefix string) error {
@@ -350,24 +343,24 @@ func getInstances(db *sql.DB) ([]Instance, error) {
 
 func isContainerRunning(containerName string) (bool, error) {
 
-	command := fmt.Sprintf("docker ps --filter name=%v --filter status=running --format '{{.Names}}'", containerName)
+	ctx := context.Background()
 
-	output, err := runCommand(command)
+	dockerClient, err := client.New(client.FromEnv, client.WithUserAgent("test"))
 	if err != nil {
-		return false, fmt.Errorf("there was an error: %v", err)
+		return false, fmt.Errorf("could not create docker client: %s", err.Error())
 	}
+	defer dockerClient.Close()
 
-	//Remove the extra single quotes and newlines around the output
-	output = strings.Replace(output, "'", "", -1)
-	output = strings.Replace(output, "\n", "", -1)
+	containerListResult, err := dockerClient.ContainerList(ctx, client.ContainerListOptions{
+		All: true,
+	})
 
-	if output == containerName {
-		return true, nil
-	} else if output == "" {
-		return false, nil
+	for _, container := range containerListResult.Items {
+		if slices.Contains(container.Names, "/"+containerName) {
+			return true, nil
+		}
 	}
-
-	return false, fmt.Errorf("something went wrong")
+	return false, nil
 }
 
 func removeOldSaves(db *sql.DB, instance Instance, saveRetention int) error {
