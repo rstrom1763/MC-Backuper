@@ -3,10 +3,10 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io"
 	"log"
-	"main/daos"
 	"os"
 	"os/exec"
 	"strconv"
@@ -14,6 +14,7 @@ import (
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/rstrom1763/MC-Backuper/client"
 )
 
 // Create the DB connection and create the tables if they don't already exist
@@ -84,16 +85,16 @@ func runCommand(command string) (string, error) {
 	// Run the command and capture the output
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf(string(output))
+		return "", errors.New(string(output))
 	}
 
 	// Return the output as a string
 	return string(output), nil
 }
 
-func runMinecraftCommand(dao daos.DockerDAO, command string, containerName string) (string, error) {
+func runMinecraftCommand(dockerClient client.DockerClient, command string, containerName string) (string, error) {
 
-	output, err := dao.RunCommand(context.Background(), containerName, command)
+	output, err := dockerClient.RunCommand(context.Background(), containerName, command)
 	if err != nil {
 		return "", fmt.Errorf("could not run Docker command: %s", err.Error())
 	}
@@ -101,8 +102,8 @@ func runMinecraftCommand(dao daos.DockerDAO, command string, containerName strin
 	return output, nil
 }
 
-func getNumberOfPlayers(dao daos.DockerDAO, container string) (int32, error) {
-	output, err := runMinecraftCommand(dao, "list", container)
+func getNumberOfPlayers(dockerClient client.DockerClient, container string) (int32, error) {
+	output, err := runMinecraftCommand(dockerClient, "list", container)
 	if err != nil {
 		return -1, err
 	}
@@ -115,8 +116,8 @@ func getNumberOfPlayers(dao daos.DockerDAO, container string) (int32, error) {
 	return int32(number), nil
 }
 
-func say(dao daos.DockerDAO, input string, container string) error {
-	_, err := runMinecraftCommand(dao, fmt.Sprintf("say %v", input), container)
+func say(dockerClient client.DockerClient, input string, container string) error {
+	_, err := runMinecraftCommand(dockerClient, fmt.Sprintf("say %v", input), container)
 	if err != nil {
 		return err
 	}
@@ -174,7 +175,7 @@ func deleteFile(filePath string) error {
 	return nil
 }
 
-func backupInstance(dao daos.DockerDAO, db *sql.DB, instance Instance) error {
+func backupInstance(dockerClient client.DockerClient, db *sql.DB, instance Instance) error {
 
 	transaction, err := db.Begin()
 	if err != nil {
@@ -186,13 +187,13 @@ func backupInstance(dao daos.DockerDAO, db *sql.DB, instance Instance) error {
 	defer func(transaction *sql.Tx) {
 
 		// Re-enable saving
-		output, err := runMinecraftCommand(dao, "/save-on", instance.containerName)
+		output, err := runMinecraftCommand(dockerClient, "/save-on", instance.containerName)
 		if err != nil {
 			log.Printf("Error: %v: could not reenable mc saving: %v, error: %v", instance.containerName, output, err)
 		}
 
 		// Re-enable command feedback
-		output, err = runMinecraftCommand(dao, "/gamerule sendCommandFeedback true", instance.containerName)
+		output, err = runMinecraftCommand(dockerClient, "/gamerule sendCommandFeedback true", instance.containerName)
 		if err != nil {
 			log.Printf("Error: %v: could not reenable command feedback: %v, error: %v", instance.containerName, output, err)
 		}
@@ -207,7 +208,7 @@ func backupInstance(dao daos.DockerDAO, db *sql.DB, instance Instance) error {
 
 	// Disable command output
 	// This is so there isn't a ton of output to the console all the time
-	output, err := runMinecraftCommand(dao, "/gamerule sendCommandFeedback false", instance.containerName)
+	output, err := runMinecraftCommand(dockerClient, "/gamerule sendCommandFeedback false", instance.containerName)
 	if err != nil {
 		return fmt.Errorf("could not disable command feedback: %v, error: %v", output, err)
 	}
@@ -219,11 +220,11 @@ func backupInstance(dao daos.DockerDAO, db *sql.DB, instance Instance) error {
 	tarFileName = fmt.Sprintf("world%v.tar.gz", currentTime)
 
 	// Save the mc world
-	_ = say(dao, "Saving world...", instance.containerName) // Tell players that the world is saving
+	_ = say(dockerClient, "Saving world...", instance.containerName) // Tell players that the world is saving
 
 	// Disable saving
 	// This ensures the save file doesn't change during the copy
-	output, err = runMinecraftCommand(dao, "/save-off", instance.containerName)
+	output, err = runMinecraftCommand(dockerClient, "/save-off", instance.containerName)
 	if err != nil {
 		return fmt.Errorf("could not save world: %v", err)
 	}
@@ -231,9 +232,9 @@ func backupInstance(dao daos.DockerDAO, db *sql.DB, instance Instance) error {
 	// Buffer time
 	time.Sleep(5 * time.Second)
 
-	output, err = runMinecraftCommand(dao, "/save-all", instance.containerName)
+	output, err = runMinecraftCommand(dockerClient, "/save-all", instance.containerName)
 	if err != nil {
-		_ = say(dao, "Failed to save world", instance.containerName)
+		_ = say(dockerClient, "Failed to save world", instance.containerName)
 		return fmt.Errorf("could not save world: %v", err)
 	}
 
@@ -247,7 +248,7 @@ func backupInstance(dao daos.DockerDAO, db *sql.DB, instance Instance) error {
 		if err != nil {
 
 			// Make sure the error doesn't have a newline character
-			err = fmt.Errorf(strings.Replace(err.Error(), "\n", "", -1))
+			err = errors.New(strings.Replace(err.Error(), "\n", "", -1))
 
 			log.Printf("Error: %v: Could not compress world, error: %v\n", output, err)
 
@@ -288,7 +289,7 @@ func backupInstance(dao daos.DockerDAO, db *sql.DB, instance Instance) error {
 		return fmt.Errorf("could not delete tar file: %v", err)
 	}
 
-	_ = say(dao, "Save successful!", instance.containerName)
+	_ = say(dockerClient, "Save successful!", instance.containerName)
 	log.Printf("Info: %v: Save success!\n", instance.containerName)
 
 	err = transaction.Commit()
@@ -423,7 +424,7 @@ func main() {
 	// Make sure AWS CLI is installed and configured
 	err = checkAWSCLI()
 	if err != nil {
-		log.Fatalf(err.Error())
+		log.Fatal(err)
 	}
 
 	db, err := initDB(dbPath)
@@ -438,11 +439,11 @@ func main() {
 		}
 	}(db)
 
-	dockerDao, err := daos.NewDockerDAO()
+	dockerClient, err := client.NewDockerClient()
 	if err != nil {
-		log.Fatalf("Could not create Docker DAO: %v", err)
+		log.Fatalf("Could not create Docker client: %v", err)
 	}
-	defer dockerDao.Close()
+	defer dockerClient.Close()
 
 	// An example of an insert for a new instance into the database
 	/*
@@ -467,7 +468,7 @@ func main() {
 			}
 
 			// See if the container is even running
-			containerRunning, err := dockerDao.IsContainerRunning(context.Background(), instance.containerName)
+			containerRunning, err := dockerClient.IsContainerRunning(context.Background(), instance.containerName)
 			if err != nil {
 				log.Fatalf("There was an error seeing if container: %v : was running: %v", instance.containerName, err)
 			}
@@ -480,7 +481,7 @@ func main() {
 
 			// Check if there are players online
 			// We don't want to save if there aren't even any players playing
-			playerCount, err = getNumberOfPlayers(dockerDao, instance.containerName)
+			playerCount, err = getNumberOfPlayers(dockerClient, instance.containerName)
 			if err != nil {
 				log.Printf("Error: %v: Could not get player count: %v", instance.containerName, err)
 			}
@@ -502,13 +503,13 @@ func main() {
 
 			// Set the keepInventory setting based on the that field in the instance
 			if instance.keepInventory == true {
-				_, _ = runMinecraftCommand(dockerDao, "/gamerule keepInventory true", instance.containerName)
+				_, _ = runMinecraftCommand(dockerClient, "/gamerule keepInventory true", instance.containerName)
 			} else {
-				_, _ = runMinecraftCommand(dockerDao, "/gamerule keepInventory false", instance.containerName)
+				_, _ = runMinecraftCommand(dockerClient, "/gamerule keepInventory false", instance.containerName)
 			}
 
 			// Begin the actual backup of the instance
-			err = backupInstance(dockerDao, db, instance)
+			err = backupInstance(dockerClient, db, instance)
 			if err != nil {
 				log.Printf("Error: %v: Could not backup the instance: %v", instance.containerName, err)
 			}

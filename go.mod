@@ -1,4 +1,4 @@
-module main
+module github.com/rstrom1763/MC-Backuper
 
 go 1.25.0
 
